@@ -28,6 +28,7 @@ interface MediaCaptureState {
     cameraMissing?: boolean;
     micMissing?: boolean;
     peripheralWarning?: string | null;
+    activeVirtualCameraWarning?: boolean;
 }
 
 // Browser SpeechRecognition types
@@ -56,6 +57,7 @@ export function useMediaCapture(
         cameraMissing: false,
         micMissing: false,
         peripheralWarning: null,
+        activeVirtualCameraWarning: false,
     });
 
     const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -270,6 +272,7 @@ export function useMediaCapture(
                     const match = virtualSigs.find(sig => label.includes(sig));
                     if (match) {
                         console.warn(`[MediaCapture] Virtual camera detected: "${videoTrack.label}"`);
+                        setState(prev => ({ ...prev, activeVirtualCameraWarning: true }));
                         codingApi.createEvent({
                             session_id: sessionId,
                             event_type: 'environment_anomaly',

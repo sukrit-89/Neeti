@@ -214,7 +214,7 @@ const InterviewRoomContent: React.FC = () => {
         </div>
       )}
 
-      {!isRecruiter && envWarnings.virtualCameraDetected && (
+      {!isRecruiter && (envWarnings.virtualCameraDetected || mediaCapture.activeVirtualCameraWarning) && (
         <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
           <MonitorX className="w-5 h-5 text-red-400 shrink-0" />
           <p className="text-red-200 text-xs font-medium">
