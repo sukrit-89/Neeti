@@ -194,7 +194,10 @@ const InterviewRoomContent: React.FC = () => {
     if (isRecruiter) {
       return onMessage((msg) => {
         if (msg.type === 'environment.anomaly') {
-          setRemoteEnvWarnings(msg.data as {has_vm_signals?: boolean; has_virtual_camera?: boolean});
+          setRemoteEnvWarnings(prev => ({
+            ...prev,
+            ...(msg.data as {has_vm_signals?: boolean; has_virtual_camera?: boolean})
+          }));
         }
       });
     }

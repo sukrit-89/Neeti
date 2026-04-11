@@ -289,6 +289,18 @@ export function useMediaCapture(
                                 probe_timestamp: new Date().toISOString(),
                             },
                         }).catch(err => console.warn('[MediaCapture] Failed to report virtual camera:', err));
+                    } else {
+                        // Candidate switched to a physical camera - clear the flag
+                        setState(prev => ({ ...prev, activeVirtualCameraWarning: false }));
+                        codingApi.createEvent({
+                            session_id: sessionId,
+                            event_type: 'environment_anomaly',
+                            metadata: {
+                                has_virtual_camera: false,
+                                detected_via: 'active_video_track',
+                                probe_timestamp: new Date().toISOString(),
+                            },
+                        }).catch(err => console.warn('[MediaCapture] Failed to clear virtual camera:', err));
                     }
                 }
             }
