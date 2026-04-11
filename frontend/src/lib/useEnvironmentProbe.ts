@@ -12,7 +12,7 @@
  *
  * Emits 'environment_anomaly' events via codingApi — never blocks access.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { codingApi } from './api';
 
 // ── Known VM GPU renderer substrings ──
@@ -57,6 +57,12 @@ interface EnvironmentAnomaly {
   raw_value?: string;
 }
 
+export interface EnvironmentWarnings {
+  vmDetected: boolean;
+  virtualCameraDetected: boolean;
+  warnings: string[];
+}
+
 /**
  * Probe WebGL renderer for VM signatures.
  */
@@ -97,9 +103,8 @@ function probeWebGLRenderer(): EnvironmentAnomaly | null {
  */
 function probeHardware(): EnvironmentAnomaly | null {
   const cores = navigator.hardwareConcurrency || 0;
-  const memory = (navigator as any).deviceMemory || 0; // deviceMemory is Chrome-only
+  const memory = (navigator as any).deviceMemory || 0;
 
-  // VMs typically expose 1-2 cores and ≤4 GB memory
   if (cores > 0 && cores <= 2 && memory > 0 && memory <= 4) {
     return {
       type: 'low_hardware',
@@ -109,7 +114,6 @@ function probeHardware(): EnvironmentAnomaly | null {
     };
   }
 
-  // Just 1 core is suspicious even without memory info
   if (cores === 1) {
     return {
       type: 'low_hardware',
@@ -129,7 +133,6 @@ function probePlatformMismatch(): EnvironmentAnomaly | null {
   const platform = (navigator.platform || '').toLowerCase();
   const ua = navigator.userAgent.toLowerCase();
 
-  // Windows platform but Linux/Mac user-agent or vice versa
   const platformIsWindows = platform.includes('win');
   const platformIsLinux = platform.includes('linux');
   const platformIsMac = platform.includes('mac');
@@ -160,7 +163,6 @@ function probePlatformMismatch(): EnvironmentAnomaly | null {
 function probeScreen(): EnvironmentAnomaly | null {
   const { width, height } = window.screen;
 
-  // VM-typical non-standard resolutions
   const vmResolutions = [
     [800, 600],
     [1024, 768],
@@ -205,12 +207,11 @@ async function probeVirtualCameras(): Promise<EnvironmentAnomaly[]> {
             confidence: 'high',
             raw_value: device.label,
           });
-          break; // one match per device is enough
+          break;
         }
       }
     }
 
-    // Supplementary: many video inputs can indicate virtual camera stacking
     if (videoInputs.length > 3) {
       anomalies.push({
         type: 'virtual_camera',
@@ -220,17 +221,23 @@ async function probeVirtualCameras(): Promise<EnvironmentAnomaly[]> {
       });
     }
   } catch {
-    // Permission denied or API not available — not an anomaly
+    // Permission denied or API not available
   }
 
   return anomalies;
 }
 
 /**
- * Main hook. Runs once per session join and emits anomaly events.
+ * Main hook. Runs once per session join, emits anomaly events,
+ * and returns reactive warning state for the UI.
  */
-export function useEnvironmentProbe(sessionId: number | null) {
+export function useEnvironmentProbe(sessionId: number | null): EnvironmentWarnings {
   const hasRun = useRef(false);
+  const [envWarnings, setEnvWarnings] = useState<EnvironmentWarnings>({
+    vmDetected: false,
+    virtualCameraDetected: false,
+    warnings: [],
+  });
 
   useEffect(() => {
     if (!sessionId || hasRun.current) return;
@@ -239,7 +246,6 @@ export function useEnvironmentProbe(sessionId: number | null) {
     const runProbe = async () => {
       const anomalies: EnvironmentAnomaly[] = [];
 
-      // Synchronous probes
       const gpuAnomaly = probeWebGLRenderer();
       if (gpuAnomaly) anomalies.push(gpuAnomaly);
 
@@ -252,11 +258,9 @@ export function useEnvironmentProbe(sessionId: number | null) {
       const screenAnomaly = probeScreen();
       if (screenAnomaly) anomalies.push(screenAnomaly);
 
-      // Async probes
       const cameraAnomalies = await probeVirtualCameras();
       anomalies.push(...cameraAnomalies);
 
-      // Only emit if we found something
       if (anomalies.length === 0) {
         console.log('[EnvironmentProbe] No anomalies detected ✓');
         return;
@@ -267,7 +271,28 @@ export function useEnvironmentProbe(sessionId: number | null) {
         anomalies
       );
 
-      // Emit a single composite event with all evidence
+      // Set UI-visible warnings
+      const hasVM = anomalies.some(a => a.type === 'vm_gpu' || a.type === 'low_hardware');
+      const hasVirtualCam = anomalies.some(a => a.type === 'virtual_camera');
+      const warningMessages: string[] = [];
+
+      if (hasVM) {
+        warningMessages.push('Virtual machine environment detected. This session is being monitored for integrity.');
+      }
+      if (hasVirtualCam) {
+        warningMessages.push('Virtual camera detected (e.g. OBS). Your real camera feed is required for this interview.');
+      }
+      if (anomalies.some(a => a.type === 'platform_mismatch')) {
+        warningMessages.push('OS environment mismatch detected. This has been flagged for review.');
+      }
+
+      setEnvWarnings({
+        vmDetected: hasVM,
+        virtualCameraDetected: hasVirtualCam,
+        warnings: warningMessages,
+      });
+
+      // Emit to backend
       try {
         await codingApi.createEvent({
           session_id: sessionId,
@@ -280,8 +305,8 @@ export function useEnvironmentProbe(sessionId: number | null) {
               confidence: a.confidence,
               raw_value: a.raw_value,
             })),
-            has_vm_signals: anomalies.some(a => a.type === 'vm_gpu' || a.type === 'low_hardware'),
-            has_virtual_camera: anomalies.some(a => a.type === 'virtual_camera'),
+            has_vm_signals: hasVM,
+            has_virtual_camera: hasVirtualCam,
             probe_timestamp: new Date().toISOString(),
             user_agent: navigator.userAgent,
             screen: `${window.screen.width}x${window.screen.height}`,
@@ -293,8 +318,10 @@ export function useEnvironmentProbe(sessionId: number | null) {
       }
     };
 
-    // Small delay so the session is fully initialized before we probe
     const timer = setTimeout(runProbe, 2000);
     return () => clearTimeout(timer);
   }, [sessionId]);
+
+  return envWarnings;
 }
+

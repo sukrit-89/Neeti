@@ -27,6 +27,7 @@ interface MediaCaptureState {
     error: string | null;
     cameraMissing?: boolean;
     micMissing?: boolean;
+    peripheralWarning?: string | null;
 }
 
 // Browser SpeechRecognition types
@@ -54,6 +55,7 @@ export function useMediaCapture(
         error: null,
         cameraMissing: false,
         micMissing: false,
+        peripheralWarning: null,
     });
 
     const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -397,6 +399,17 @@ export function useMediaCapture(
                 const deviceStr = deviceNames.join('|');
                 
                 if (lastDeviceStr.current !== null && lastDeviceStr.current !== deviceStr) {
+                    // ── Set visible warning for candidate ──
+                    const added = deviceNames.filter(d => !lastDeviceStr.current!.includes(d));
+                    const removed = lastDeviceStr.current!.split('|').filter(d => !deviceStr.includes(d));
+                    let warningMsg = 'Peripheral device change detected.';
+                    if (added.length > 0) warningMsg = `New device connected: ${added.map(d => d.split(':')[1] || d).join(', ')}`;
+                    else if (removed.length > 0) warningMsg = `Device disconnected. This change has been recorded.`;
+
+                    setState(prev => ({ ...prev, peripheralWarning: warningMsg }));
+                    // Auto-dismiss warning after 10s
+                    setTimeout(() => setState(prev => ({ ...prev, peripheralWarning: null })), 10000);
+
                     await codingApi.createEvent({
                         session_id: sessionId,
                         event_type: 'peripheral_change',

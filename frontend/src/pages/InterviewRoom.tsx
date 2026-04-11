@@ -10,7 +10,7 @@ import { useMediaCapture } from '../lib/useMediaCapture';
 import { useEnvironmentProbe } from '../lib/useEnvironmentProbe';
 import { CodeEditor } from '../components/CodeEditor';
 import { Button } from '../components/Button';
-import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff } from 'lucide-react';
+import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff, ShieldAlert, MonitorX, Usb } from 'lucide-react';
 
 const LIVEKIT_WS_URL = import.meta.env.VITE_LIVEKIT_WS_URL;
 
@@ -179,7 +179,7 @@ const InterviewRoomContent: React.FC = () => {
   );
 
   // Environment integrity probe — detects VMs and virtual cameras (candidates only)
-  useEnvironmentProbe(!isRecruiter && currentSession ? currentSession.id : null);
+  const envWarnings = useEnvironmentProbe(!isRecruiter && currentSession ? currentSession.id : null);
 
   useEffect(() => {
     if (!currentSession) { navigate('/dashboard'); return; }
@@ -203,6 +203,34 @@ const InterviewRoomContent: React.FC = () => {
     <div className="h-screen flex flex-col bg-neeti-bg overflow-hidden relative">
       <div className="ambient-orb ambient-orb-primary w-[400px] h-[400px] top-[-15%] right-[5%] z-0 opacity-40" />
       <div className="ambient-orb ambient-orb-blue w-[300px] h-[300px] bottom-[10%] left-[-5%] z-0 opacity-30" />
+
+      {/* ── Integrity Warning Banners ── */}
+      {!isRecruiter && envWarnings.vmDetected && (
+        <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
+          <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
+          <p className="text-red-200 text-xs font-medium">
+            <span className="font-bold text-red-100">⚠ Virtual Machine Detected</span> — Your environment has been flagged. This session is being monitored for integrity compliance.
+          </p>
+        </div>
+      )}
+
+      {!isRecruiter && envWarnings.virtualCameraDetected && (
+        <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
+          <MonitorX className="w-5 h-5 text-red-400 shrink-0" />
+          <p className="text-red-200 text-xs font-medium">
+            <span className="font-bold text-red-100">⚠ Virtual Camera Detected</span> — A virtual camera (e.g. OBS) was identified. Please use your physical webcam for this interview.
+          </p>
+        </div>
+      )}
+
+      {!isRecruiter && mediaCapture.peripheralWarning && (
+        <div className="relative z-20 bg-amber-900/80 border-b border-amber-500/30 px-4 py-2 flex items-center gap-3 animate-fade-in shrink-0">
+          <Usb className="w-4 h-4 text-amber-400 shrink-0" />
+          <p className="text-amber-200 text-xs font-medium">
+            <span className="font-bold text-amber-100">Peripheral Change:</span> {mediaCapture.peripheralWarning}
+          </p>
+        </div>
+      )}
 
       <header className="glass-header px-5 py-3 shrink-0 relative z-10">
         <div className="flex items-center justify-between">
