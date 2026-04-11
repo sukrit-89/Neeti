@@ -25,6 +25,8 @@ interface MediaCaptureState {
     audioSegments: number;
     visionFrames: number;
     error: string | null;
+    cameraMissing?: boolean;
+    micMissing?: boolean;
 }
 
 // Browser SpeechRecognition types
@@ -50,6 +52,8 @@ export function useMediaCapture(
         audioSegments: 0,
         visionFrames: 0,
         error: null,
+        cameraMissing: false,
+        micMissing: false,
     });
 
     const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -264,6 +268,8 @@ export function useMediaCapture(
                 audioSegments: 0,
                 visionFrames: 0,
                 error: null,
+                cameraMissing: !videoEnabled && enableVideo,
+                micMissing: !audioEnabled && enableAudio,
             });
 
             // Start periodic vision capture

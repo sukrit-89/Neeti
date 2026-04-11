@@ -9,7 +9,7 @@ import type { WebSocketMessage } from '../lib/websocket';
 import { useMediaCapture } from '../lib/useMediaCapture';
 import { CodeEditor } from '../components/CodeEditor';
 import { Button } from '../components/Button';
-import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, Mic } from 'lucide-react';
+import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff } from 'lucide-react';
 
 const LIVEKIT_WS_URL = import.meta.env.VITE_LIVEKIT_WS_URL;
 
@@ -242,16 +242,25 @@ const InterviewRoomContent: React.FC = () => {
             {/* Media capture status — candidates only */}
             {!isRecruiter && mediaCapture.isCapturing && (
               <div className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-neeti-border bg-neeti-surface">
-                <Camera className="w-3 h-3 text-status-success" />
-                <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.visionFrames}</span>
-                <Mic className="w-3 h-3 text-status-success" />
-                <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.audioSegments}</span>
+                {mediaCapture.cameraMissing ? (
+                    <CameraOff className="w-3 h-3 text-status-warning" />
+                ) : (
+                    <Camera className="w-3 h-3 text-status-success" />
+                )}
+                <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.cameraMissing ? 'ERR' : mediaCapture.visionFrames}</span>
+                
+                {mediaCapture.micMissing ? (
+                    <MicOff className="w-3 h-3 text-status-warning" />
+                ) : (
+                    <Mic className="w-3 h-3 text-status-success" />
+                )}
+                <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.micMissing ? 'ERR' : mediaCapture.audioSegments}</span>
               </div>
             )}
             {!isRecruiter && mediaCapture.error && (
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-status-warning/30 bg-status-warning/5">
-                <Camera className="w-3 h-3 text-status-warning" />
-                <span className="text-[10px] font-mono text-status-warning">No access</span>
+                <AlertTriangle className="w-3 h-3 text-status-warning" />
+                <span className="text-[10px] font-mono text-status-warning">Capture Error</span>
               </div>
             )}
 
