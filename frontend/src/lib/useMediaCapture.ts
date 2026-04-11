@@ -255,6 +255,37 @@ export function useMediaCapture(
                 if (!canvasRef.current) {
                     canvasRef.current = document.createElement('canvas');
                 }
+
+                // ── Virtual camera detection (secondary check) ──
+                const videoTrack = stream.getVideoTracks()[0];
+                if (videoTrack) {
+                    const label = (videoTrack.label || '').toLowerCase();
+                    const virtualSigs = [
+                        'obs virtual', 'obs-camera', 'manycam', 'xsplit',
+                        'snap camera', 'e2esoft', 'virtual cam', 'virtualcam',
+                        'droidcam', 'iriun', 'epoccam', 'chromacam', 'mmhmm',
+                    ];
+                    const match = virtualSigs.find(sig => label.includes(sig));
+                    if (match) {
+                        console.warn(`[MediaCapture] Virtual camera detected: "${videoTrack.label}"`);
+                        codingApi.createEvent({
+                            session_id: sessionId,
+                            event_type: 'environment_anomaly',
+                            metadata: {
+                                anomaly_count: 1,
+                                anomalies: [{
+                                    type: 'virtual_camera',
+                                    evidence: `Active camera matches virtual camera signature: "${match}"`,
+                                    confidence: 'high',
+                                    raw_value: videoTrack.label,
+                                }],
+                                has_virtual_camera: true,
+                                detected_via: 'active_video_track',
+                                probe_timestamp: new Date().toISOString(),
+                            },
+                        }).catch(err => console.warn('[MediaCapture] Failed to report virtual camera:', err));
+                    }
+                }
             }
 
             activeRef.current = true;

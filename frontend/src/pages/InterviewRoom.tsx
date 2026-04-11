@@ -7,6 +7,7 @@ import { useAuthStore } from '../store/useAuthStore';
 import { WebSocketProvider, useWebSocketContext } from '../lib/websocket';
 import type { WebSocketMessage } from '../lib/websocket';
 import { useMediaCapture } from '../lib/useMediaCapture';
+import { useEnvironmentProbe } from '../lib/useEnvironmentProbe';
 import { CodeEditor } from '../components/CodeEditor';
 import { Button } from '../components/Button';
 import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff } from 'lucide-react';
@@ -176,6 +177,9 @@ const InterviewRoomContent: React.FC = () => {
     !isRecruiter && currentSession ? currentSession.id : null,
     { enableAudio: !isRecruiter, enableVideo: !isRecruiter }
   );
+
+  // Environment integrity probe — detects VMs and virtual cameras (candidates only)
+  useEnvironmentProbe(!isRecruiter && currentSession ? currentSession.id : null);
 
   useEffect(() => {
     if (!currentSession) { navigate('/dashboard'); return; }

@@ -54,7 +54,7 @@ async def _verify_session_participant(
                 and_(Candidate.session_id == session_id, Candidate.user_id == str(user_id))
             )
         )
-        cand = candidate.scalar_one_or_none()
+        cand = candidate.first()
         
         if not cand and current_user.get("email"):
             candidate = await db.execute(
@@ -62,7 +62,7 @@ async def _verify_session_participant(
                     and_(Candidate.session_id == session_id, Candidate.email == current_user["email"])
                 )
             )
-            cand = candidate.scalar_one_or_none()
+            cand = candidate.first()
             
         if not cand:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enrolled")

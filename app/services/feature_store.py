@@ -19,7 +19,7 @@ import numpy as np
 from app.models.models import CodingEvent
 from app.core.logging import logger
 
-FEATURE_VERSION = "v1.2"
+FEATURE_VERSION = "v1.3"
 
 
 @dataclass
@@ -59,6 +59,8 @@ class BehavioralFeatures:
 
     # --- Hardware & Environment ---
     peripheral_change_count: int = 0    # External monitors, extra cameras/mics plugged in
+    virtual_env_flags: int = 0          # Environment anomaly events (VM/virtual camera signals)
+    virtual_camera_detected: bool = False  # True if a virtual camera was detected by label
 
     # --- Metadata ---
     total_events: int = 0
@@ -87,6 +89,8 @@ class BehavioralFeatures:
             float(self.code_length_jumps),
             float(self.tab_switch_count),
             float(self.peripheral_change_count),
+            float(self.virtual_env_flags),
+            float(self.virtual_camera_detected),
         ]
 
 
@@ -272,6 +276,23 @@ class FeatureStore:
         tab_switch_count = sum(1 for e in sorted_events if e.event_type == "tab_away")
         peripheral_change_count = sum(1 for e in sorted_events if e.event_type == "peripheral_change")
 
+        # --- Virtual environment detection ---
+        env_anomaly_events = [e for e in sorted_events if e.event_type == "environment_anomaly"]
+        virtual_env_flags = len(env_anomaly_events)
+        virtual_camera_detected = False
+        for e in env_anomaly_events:
+            meta = e.metadata or {}
+            if meta.get("has_virtual_camera"):
+                virtual_camera_detected = True
+                break
+            # Also check nested anomalies list
+            for anomaly in meta.get("anomalies", []):
+                if anomaly.get("type") == "virtual_camera":
+                    virtual_camera_detected = True
+                    break
+            if virtual_camera_detected:
+                break
+
         return BehavioralFeatures(
             feature_version=FEATURE_VERSION,
             session_id=session_id,
@@ -289,6 +310,8 @@ class FeatureStore:
             code_length_jumps=code_length_jumps,
             tab_switch_count=tab_switch_count,
             peripheral_change_count=peripheral_change_count,
+            virtual_env_flags=virtual_env_flags,
+            virtual_camera_detected=virtual_camera_detected,
             total_events=total_events,
             session_duration_s=round(session_duration_s, 2),
         )

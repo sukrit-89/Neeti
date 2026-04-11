@@ -217,6 +217,29 @@ class EvaluationAgent(BaseAgent):
                     strengths.append(f"Strong {output.agent_type.value} performance")
                 elif output.score < 50:
                     weaknesses.append(f"Weak {output.agent_type.value} performance")
+            
+            # ── Environment integrity flags from behavioral features ──
+            if output.findings and isinstance(output.findings, dict):
+                bf = output.findings.get("behavioral_features", {})
+                if isinstance(bf, dict):
+                    if bf.get("virtual_camera_detected"):
+                        all_flags.append({
+                            "type": "virtual_camera_detected",
+                            "severity": "high",
+                            "message": "Virtual camera detected (e.g. OBS Virtual Camera). "
+                                       "Candidate may be masking their real environment.",
+                            "agent": "environment_probe",
+                        })
+                    
+                    vm_flags = bf.get("virtual_env_flags", 0)
+                    if vm_flags > 0 and not bf.get("virtual_camera_detected"):
+                        all_flags.append({
+                            "type": "virtual_environment_detected",
+                            "severity": "high",
+                            "message": f"Environment anomaly signals detected ({vm_flags} event(s)). "
+                                       "Candidate may be running inside a virtual machine.",
+                            "agent": "environment_probe",
+                        })
         
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         all_flags.sort(key=lambda f: severity_order.get(f.get("severity", "low"), 3))

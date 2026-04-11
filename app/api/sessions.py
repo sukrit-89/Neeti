@@ -229,7 +229,7 @@ async def get_room_token(
                 )
             )
         )
-        candidate = result.scalar_one_or_none()
+        candidate = result.first()
         if not candidate and current_user.get("email"):
             result = await db.execute(
                 select(Candidate).where(
@@ -239,7 +239,7 @@ async def get_room_token(
                     )
                 )
             )
-            candidate = result.scalar_one_or_none()
+            candidate = result.first()
         is_candidate = candidate is not None
     
     if not is_recruiter and not is_candidate:

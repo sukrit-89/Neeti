@@ -76,7 +76,21 @@ async def verify_session_membership(user: dict, session_id: int) -> bool:
                     )
                 )
             )
-            if result.scalar_one_or_none():
+            candidate = result.first()
+            
+            # ── FIX #22: Email-based fallback for candidates (consistent with REST API) ──
+            if not candidate and user.get("email"):
+                result = await db.execute(
+                    select(Candidate).where(
+                        and_(
+                            Candidate.session_id == session_id,
+                            Candidate.email == user["email"]
+                        )
+                    )
+                )
+                candidate = result.first()
+                
+            if candidate:
                 return True
 
         logger.warning(

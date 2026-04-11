@@ -45,10 +45,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ── CORS: Allow all origins in development for reliable error visibility ──
+# ── CORS: Use explicit origins when credentials=True ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,10 +65,20 @@ import traceback
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions and return a proper JSON response with CORS headers."""
     logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
-    return JSONResponse(
+    
+    response = JSONResponse(
         status_code=500,
         content={"detail": f"Internal server error: {str(exc)}"},
     )
+    
+    # ── FIX #21: Manually add CORS headers to exception response ──
+    # Middleware may not be called for some exception types
+    origin = request.headers.get("origin")
+    if origin in settings.cors_origins_list or "*" in settings.cors_origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+    return response
 
 
 # ── FIX #4: Rate limiting middleware using Redis ──
