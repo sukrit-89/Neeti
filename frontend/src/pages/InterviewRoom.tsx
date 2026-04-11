@@ -279,7 +279,7 @@ const InterviewRoomContent: React.FC = () => {
       <div className="flex-1 flex overflow-hidden">
         <div className={`${isCodeExpanded ? 'w-1/2' : 'w-2/3'} border-r border-neeti-border flex flex-col transition-all duration-300`}>
           <div className="flex-1 p-3">
-            <LiveKitRoom token={roomToken} serverUrl={LIVEKIT_WS_URL} connectOptions={{ autoSubscribe: true }}>
+            <LiveKitRoom video={true} audio={true} token={roomToken} serverUrl={LIVEKIT_WS_URL} connectOptions={{ autoSubscribe: true }}>
               <VideoConference className="h-full" />
               <RoomAudioRenderer />
             </LiveKitRoom>
