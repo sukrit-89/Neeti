@@ -12,7 +12,7 @@ from app.core.auth import get_current_user
 from app.models.models import CodingEvent, Session, Candidate
 from app.schemas.schemas import CodingEventCreate, CodingEventResponse
 from app.core.logging import logger
-from app.core.events import publish_code_changed, publish_code_executed
+from app.core.events import publish_code_changed, publish_code_executed, publish_environment_anomaly
 
 router = APIRouter(prefix="/coding-events", tags=["Coding"])
 
@@ -124,6 +124,11 @@ async def create_coding_event(
                 "output": event_data.execution_output,
                 "error": event_data.execution_error
             }
+        )
+    elif event_data.event_type == "environment_anomaly":
+        await publish_environment_anomaly(
+            session_id=event_data.session_id,
+            data=event_data.metadata or {}
         )
     else:
         await publish_code_changed(

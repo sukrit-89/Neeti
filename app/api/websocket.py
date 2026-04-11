@@ -191,6 +191,7 @@ async def websocket_endpoint(
             f"events:code.executed",
             f"events:speech.transcribed",
             f"events:session.ended",
+            f"events:environment.anomaly",
         ]
 
         if redis_client.client:

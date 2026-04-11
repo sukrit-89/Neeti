@@ -171,6 +171,7 @@ const InterviewRoomContent: React.FC = () => {
   const [isCodeExpanded, setIsCodeExpanded] = useState(false);
   const [language, setLanguage] = useState('typescript');
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
+  const [remoteEnvWarnings, setRemoteEnvWarnings] = useState<{has_vm_signals?: boolean; has_virtual_camera?: boolean} | null>(null);
 
   // Media capture — only for candidates (not recruiters)
   const mediaCapture = useMediaCapture(
@@ -188,6 +189,17 @@ const InterviewRoomContent: React.FC = () => {
     }
   }, [currentSession, roomToken, navigate, fetchRoomToken]);
 
+  const { onMessage } = useWebSocketContext();
+  useEffect(() => {
+    if (isRecruiter) {
+      return onMessage((msg) => {
+        if (msg.type === 'environment.anomaly') {
+          setRemoteEnvWarnings(msg.data as {has_vm_signals?: boolean; has_virtual_camera?: boolean});
+        }
+      });
+    }
+  }, [onMessage, isRecruiter]);
+
   if (!currentSession || !roomToken) {
     return (
       <div className="min-h-screen bg-neeti-bg flex items-center justify-center">
@@ -204,7 +216,7 @@ const InterviewRoomContent: React.FC = () => {
       <div className="ambient-orb ambient-orb-primary w-[400px] h-[400px] top-[-15%] right-[5%] z-0 opacity-40" />
       <div className="ambient-orb ambient-orb-blue w-[300px] h-[300px] bottom-[10%] left-[-5%] z-0 opacity-30" />
 
-      {/* ── Integrity Warning Banners ── */}
+      {/* ── Candidate's own integrity Warnings ── */}
       {!isRecruiter && envWarnings.vmDetected && (
         <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
           <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
@@ -219,6 +231,25 @@ const InterviewRoomContent: React.FC = () => {
           <MonitorX className="w-5 h-5 text-red-400 shrink-0" />
           <p className="text-red-200 text-xs font-medium">
             <span className="font-bold text-red-100">⚠ Virtual Camera Detected</span> — A virtual camera (e.g. OBS) was identified. Please use your physical webcam for this interview.
+          </p>
+        </div>
+      )}
+
+      {/* ── Recruiter's view of Candidate's Integrity Warnings ── */}
+      {isRecruiter && remoteEnvWarnings?.has_vm_signals && (
+        <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
+          <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
+          <p className="text-red-200 text-xs font-medium">
+            <span className="font-bold text-red-100">⚠ Action Required: Virtual Machine</span> — The candidate's environment runs on a Virtual Machine. Integrity violation recorded.
+          </p>
+        </div>
+      )}
+
+      {isRecruiter && remoteEnvWarnings?.has_virtual_camera && (
+        <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
+          <MonitorX className="w-5 h-5 text-red-400 shrink-0" />
+          <p className="text-red-200 text-xs font-medium">
+            <span className="font-bold text-red-100">⚠ Action Required: Virtual Camera</span> — The candidate is using a virtual camera driver (e.g. OBS). Possible bypass attempt.
           </p>
         </div>
       )}

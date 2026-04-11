@@ -37,6 +37,8 @@ class EventType(str, Enum):
     
     EVALUATION_REQUESTED = "evaluation.requested"
     EVALUATION_COMPLETED = "evaluation.completed"
+    
+    ENVIRONMENT_ANOMALY = "environment.anomaly"
 
 class Event(BaseModel):
     """Base event model."""
@@ -176,5 +178,14 @@ async def publish_code_executed(session_id: int, result: dict[str, Any] = None, 
         event_type=EventType.CODE_EXECUTED,
         session_id=session_id,
         data=event_data
+    )
+    await EventPublisher.publish(event)
+
+async def publish_environment_anomaly(session_id: int, data: dict) -> None:
+    """Publish an environment.anomaly event for recruiter warnings."""
+    event = Event(
+        event_type=EventType.ENVIRONMENT_ANOMALY,
+        session_id=session_id,
+        data=data
     )
     await EventPublisher.publish(event)
