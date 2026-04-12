@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useCallback, useRef, useState } from 'react';
 /* eslint-disable react-refresh/only-export-components */
-import { supabase } from './supabase';
+import { getAccessTokenSafe } from './supabase';
 
 const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000';
 
@@ -60,8 +60,7 @@ export const WebSocketProvider: React.FC<{ sessionId: number | null; children: R
         cleanup();
 
         try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const authToken = session?.access_token || '';
+            const authToken = (await getAccessTokenSafe()) || '';
 
             const url = authToken
                 ? `${WS_BASE_URL}/api/ws/session/${sessionId}?token=${authToken}`
@@ -219,8 +218,7 @@ export function useWebSocket(sessionId: number | null) {
         cleanup();
 
         try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const authToken = session?.access_token || '';
+            const authToken = (await getAccessTokenSafe()) || '';
             const url = authToken
                 ? `${WS_BASE_URL}/api/ws/session/${sessionId}?token=${authToken}`
                 : `${WS_BASE_URL}/api/ws/session/${sessionId}`;
@@ -305,8 +303,7 @@ export function useLiveMonitoring(sessionId: number | null) {
         cleanup();
 
         try {
-            const { data: { session } } = await supabase.auth.getSession();
-            const authToken = session?.access_token || '';
+            const authToken = (await getAccessTokenSafe()) || '';
             const url = authToken
                 ? `${WS_BASE_URL}/api/ws/session/${sessionId}?token=${authToken}`
                 : `${WS_BASE_URL}/api/ws/session/${sessionId}`;

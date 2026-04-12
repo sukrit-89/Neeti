@@ -643,6 +643,25 @@
   animation: progressFill 1s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* RT-08 FIX: animate-fade-in is referenced in TS string literals and
+   will be purged by Tailwind JIT unless declared in CSS directly. */
+@keyframes fadeInUp {
+  0%   { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Pulsing dot for live indicator — used in WorkspaceEditor status bar */
+@keyframes pulseDotRing {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.animate-pulse-dot {
+  animation: pulseDotRing 1.8s ease-in-out infinite;
+}
+
 /* Synced for GitHub timestamp */
 
  

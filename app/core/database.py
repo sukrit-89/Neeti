@@ -92,8 +92,19 @@ async def init_db() -> None:
     Non-fatal: if the database is unreachable the app still starts
     in a degraded state so the health-check endpoint can report the
     issue instead of crashing the whole process.
+
+    IMPORTANT: All ORM models must be imported before create_all is called
+    so that SQLAlchemy's metadata registry contains their table definitions.
+    Failure to import a model means its table is silently skipped.
     """
     try:
+        # Register all ORM-mapped tables with Base.metadata before create_all.
+        # Models defined outside app/models/models.py (e.g. EventOutbox in
+        # outbox.py) must be explicitly imported here.
+        from app.models import models as _models          # noqa: F401  — registers all app tables
+        from app.core.outbox import EventOutbox           # noqa: F401  — registers event_outbox
+        _ = _models, EventOutbox                          # suppress "unused import" warnings
+
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database initialized")

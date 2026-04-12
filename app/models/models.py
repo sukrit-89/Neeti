@@ -218,27 +218,34 @@ class VisionMetric(Base):
 class AgentOutput(Base):
     """Output from AI agents processing session data."""
     __tablename__ = "agent_outputs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
-    
+
     agent_type = Column(Enum(AgentType, values_callable=lambda x: [e.value for e in x]), nullable=False, index=True)
-    
+
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(50), default="processing")
-    
+
     score = Column(Float, nullable=True)
     findings = Column(JSON, default=dict)
     flags = Column(JSON, default=list)
     insights = Column(Text, nullable=True)
-    
+
     error_message = Column(Text, nullable=True)
-    
+
     session = relationship("Session", back_populates="agent_outputs")
-    
+
     __table_args__ = (
         Index("idx_agent_output_session_type", "session_id", "agent_type"),
+        Index("idx_agent_output_session_type_status", "session_id", "agent_type", "status"),
+        # Partial unique index: at most ONE completed/skipped row per (session_id, agent_type).
+        # Raw SQL DDL because SQLAlchemy's UniqueConstraint does not support WHERE clauses
+        # portably — this is applied via migration 004_production_hardening.sql.
+        # Documented here so the intent is visible to readers of the model.
+        # Index("uq_agent_output_success", "session_id", "agent_type",
+        #       unique=True, postgresql_where=text("status IN ('completed', 'skipped')")),
     )
 
 class Evaluation(Base):

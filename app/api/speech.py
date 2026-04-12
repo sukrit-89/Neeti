@@ -126,17 +126,23 @@ async def transcribe_audio(
             data={
                 "segment_id": segment.id,
                 "text": text,
-                "confidence": transcription_result["confidence"],
+                # BUG-01 FIX: use .get() — key may be absent from service result
+                "confidence": transcription_result.get("confidence", 0.0),
                 "duration": actual_duration,
                 "speaker_id": str(user_id),
             }
         )
         await EventPublisher.publish(event)
     
+    # Guard: 'segment' is only defined when text is non-empty.
+    # BUG-01 FIX: transcription_result["confidence"] raises KeyError when
+    # the speech service omits the key — use .get() with a safe default
+    # everywhere on this dict.
+    confidence = transcription_result.get("confidence", 0.0)
     return {
         "success": True,
         "text": text,
-        "confidence": transcription_result["confidence"],
+        "confidence": confidence,
         "language": transcription_result.get("language"),
         "segment_id": segment.id if text else None,
     }

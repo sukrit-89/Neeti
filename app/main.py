@@ -3,6 +3,7 @@ Main FastAPI application.
 Production-grade configuration with proper lifecycle management.
 """
 import time
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
@@ -24,12 +25,26 @@ async def lifespan(app: FastAPI):
     # Non-fatal: app starts in degraded mode if DB/Redis are unreachable
     await init_db()
     await redis_client.connect()
+
+    # BUG-04 FIX: Start the transactional outbox sweeper as a background task.
+    # Without this the outbox table is written but never drained — agent
+    # completion events are never published to Redis WebSocket subscribers.
+    from app.core.outbox import run_outbox_sweeper
+    outbox_task = asyncio.create_task(run_outbox_sweeper(), name="outbox_sweeper")
+    logger.info("Outbox sweeper started")
     
     logger.info("Application startup complete")
     
     yield
     
     logger.info("Shutting down application...")
+
+    # Cancel and await the outbox task for a clean shutdown
+    outbox_task.cancel()
+    try:
+        await outbox_task
+    except asyncio.CancelledError:
+        logger.info("Outbox sweeper stopped cleanly")
     
     await redis_client.disconnect()
     await close_db()
@@ -66,13 +81,19 @@ async def global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions and return a proper JSON response with CORS headers."""
     logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
     
+    # BUG-16 FIX: Never expose internal exception messages (SQL fragments,
+    # file paths, PII) to API clients in production.
+    if settings.DEBUG:
+        detail = f"Internal server error: {str(exc)}"
+    else:
+        detail = "An unexpected error occurred. Please try again."
+
     response = JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
+        content={"detail": detail},
     )
     
-    # ── FIX #21: Manually add CORS headers to exception response ──
-    # Middleware may not be called for some exception types
+    # Manually add CORS headers — middleware may not run for some exception types
     origin = request.headers.get("origin")
     if origin in settings.cors_origins_list or "*" in settings.cors_origins_list:
         response.headers["Access-Control-Allow-Origin"] = origin or "*"
@@ -85,9 +106,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     """
-    Simple sliding-window rate limiter using Redis.
+    Sliding-window rate limiter using a Redis sorted set.
     Limits per IP to RATE_LIMIT_PER_MINUTE requests/minute.
     Skips rate limiting if Redis is unavailable.
+
+    BUG-13 FIX: the previous fixed-window counter allowed 2× burst at the
+    window boundary (N requests at :59 + N at :00 with no penalty).
+    A sliding window using a Redis sorted set is immune to this.
     """
     # Skip rate limiting for health/root endpoints and WebSocket upgrades
     if request.url.path in ("/", "/health", "/api/info") or request.url.path.startswith("/ws"):
@@ -96,13 +121,21 @@ async def rate_limit_middleware(request: Request, call_next):
     try:
         if redis_client.client:
             client_ip = request.client.host if request.client else "unknown"
-            key = f"ratelimit:{client_ip}:{int(time.time()) // 60}"
-            
-            current = await redis_client.client.incr(key)
-            if current == 1:
-                await redis_client.client.expire(key, 60)
-            
+            now_ms = int(time.time() * 1000)
+            window_ms = 60_000
+            key = f"rlsw:{client_ip}"
             limit = settings.RATE_LIMIT_PER_MINUTE
+
+            # Atomic sliding window: remove expired entries, add current,
+            # count, set expiry — all in a single pipeline round-trip.
+            pipe = redis_client.client.pipeline(transaction=False)
+            pipe.zremrangebyscore(key, 0, now_ms - window_ms)
+            pipe.zadd(key, {str(now_ms): now_ms})
+            pipe.zcard(key)
+            pipe.expire(key, 60)
+            results = await pipe.execute()
+            current = results[2]  # zcard result
+
             if current > limit:
                 logger.warning(f"Rate limit exceeded for {client_ip}: {current}/{limit}")
                 return Response(
@@ -158,11 +191,13 @@ async def health_check():
     redis_status = "connected"
     
     try:
-        from app.core.database import get_db
+        # A6 FIX: use AsyncSessionLocal directly — iterating get_db() with
+        # async for / break does not reliably trigger the generator's finally
+        # cleanup, potentially leaking the session back into the pool.
+        from app.core.database import AsyncSessionLocal
         from sqlalchemy import text
-        async for db in get_db():
+        async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
-            break
     except Exception:
         db_status = "disconnected"
     

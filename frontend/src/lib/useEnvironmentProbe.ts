@@ -33,12 +33,16 @@ const VM_GPU_SIGNATURES = [
 const VIRTUAL_CAMERA_SIGNATURES = [
   'obs virtual',
   'obs-camera',
+  'obs camera',
+  'obs studio',
   'manycam',
   'xsplit',
   'snap camera',
   'e2esoft',
   'virtual cam',
   'virtualcam',
+  'virtual camera',
+  'vcam',
   'droidcam',
   'iriun',
   'epoccam',
@@ -47,6 +51,8 @@ const VIRTUAL_CAMERA_SIGNATURES = [
   'mmhmm',
   'prezi video',
   'camo',
+  'webcamoid',
+  'ndi',
   'fake',
 ];
 

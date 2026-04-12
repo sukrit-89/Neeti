@@ -2,9 +2,9 @@
 Pydantic schemas for request/response validation.
 Using Pydantic v2 with production-ready patterns.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any, Union
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, model_validator
 
 from app.models.models import UserRole, SessionStatus, AgentType
 
@@ -127,6 +127,20 @@ class SpeechSegmentCreate(BaseModel):
     speaker_id: Optional[str] = None
     audio_url: Optional[str] = None
 
+    # BUG-12 FIX: cross-field time consistency validation
+    @model_validator(mode='after')
+    def validate_time_range(self) -> 'SpeechSegmentCreate':
+        if self.end_time < self.start_time:
+            raise ValueError("end_time must be >= start_time")
+        if self.duration > 0:
+            expected = self.end_time - self.start_time
+            if abs(self.duration - expected) > 0.5:  # 0.5s tolerance
+                raise ValueError(
+                    f"duration ({self.duration:.3f}s) is inconsistent with "
+                    f"time range end_time - start_time = {expected:.3f}s"
+                )
+        return self
+
 class SpeechSegmentResponse(BaseModel):
     id: int
     session_id: int
@@ -195,15 +209,20 @@ class EvaluationResponse(BaseModel):
     # Anomaly detection results (Phase 1)
     anomaly_probability: Optional[float] = None
     anomaly_mode: Optional[str] = None
-    anomaly_reasons: list[str] = []
-    behavioral_features: dict[str, Any] = {}
-    
+    # BUG-06 FIX: use Field(default_factory=...) — mutable bare [] / {} are
+    # shared across instances in some Pydantic v2 configurations and are
+    # rejected outright in strict mode.
+    anomaly_reasons: list[str] = Field(default_factory=list)
+    behavioral_features: dict[str, Any] = Field(default_factory=dict)
+
     model_config = ConfigDict(from_attributes=True)
 
 class WSMessage(BaseModel):
     """Base WebSocket message."""
     type: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    # BUG-05 FIX: datetime.utcnow() is deprecated in Python 3.12+ and
+    # produces a timezone-naive datetime. Use timezone.utc explicitly.
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     data: dict[str, Any] = Field(default_factory=dict)
 
 class WSCodingUpdate(WSMessage):

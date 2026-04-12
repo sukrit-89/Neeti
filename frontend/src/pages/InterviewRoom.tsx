@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { LiveKitRoom, VideoConference, RoomAudioRenderer } from '@livekit/components-react';
 import '@livekit/components-styles';
@@ -10,7 +10,11 @@ import { useMediaCapture } from '../lib/useMediaCapture';
 import { useEnvironmentProbe } from '../lib/useEnvironmentProbe';
 import { CodeEditor } from '../components/CodeEditor';
 import { Button } from '../components/Button';
-import { LogOut, Code, Maximize2, Minimize2, FileText, Clock, AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff, ShieldAlert, MonitorX, Usb } from 'lucide-react';
+import {
+  LogOut, Code, Maximize2, Minimize2, FileText, Clock,
+  AlertTriangle, Wifi, WifiOff, Camera, CameraOff, Mic, MicOff,
+  ShieldAlert, MonitorX, Usb,
+} from 'lucide-react';
 
 const LIVEKIT_WS_URL = import.meta.env.VITE_LIVEKIT_WS_URL;
 
@@ -27,18 +31,24 @@ const InterviewTimer: React.FC = () => {
   return <span className="font-mono tabular-nums text-sm font-semibold text-ink-primary">{fmt(elapsedTime)}</span>;
 };
 
+// ── RT-04 FIX: Only emit WS code.changed when the user actually typed ─────────
+// WorkspaceEditor holds canonical `currentCode`. When a recruiter receives a
+// WS message we update state (isProgrammaticUpdateRef = true). CodeEditor
+// detects this ref and skips sendMessage, breaking the echo loop:
+//   recruiter WS → setCurrentCode → new `value` prop → Monaco onChange
+//                            ↑ (would echo back without the guard)
 const WorkspaceEditor: React.FC<{ sessionId: number; language: string }> = React.memo(({ sessionId, language }) => {
   const [currentCode, setCurrentCode] = useState('');
   const { user } = useAuthStore();
   const { onMessage } = useWebSocketContext();
   const isRecruiter = user?.role === 'recruiter';
+  const isProgrammaticUpdateRef = useRef(false);
 
   // Recruiter: listen for candidate's code changes via WebSocket
   useEffect(() => {
     if (!isRecruiter) return;
 
     const unsubscribe = onMessage((message: WebSocketMessage) => {
-      // Match both dot-notation (WS direct) and underscore (Redis pub/sub) event names
       if (
         message.type === 'code.changed' ||
         message.type === 'code_changed' ||
@@ -47,6 +57,7 @@ const WorkspaceEditor: React.FC<{ sessionId: number; language: string }> = React
       ) {
         const code = message.data?.code || message.data?.code_snapshot;
         if (code && typeof code === 'string') {
+          isProgrammaticUpdateRef.current = true;
           setCurrentCode(code);
         }
       }
@@ -59,7 +70,6 @@ const WorkspaceEditor: React.FC<{ sessionId: number; language: string }> = React
     setCurrentCode(val);
   }, []);
 
-  // Recruiter waiting state — show placeholder until candidate starts typing
   if (isRecruiter && !currentCode) {
     return (
       <>
@@ -99,13 +109,15 @@ const WorkspaceEditor: React.FC<{ sessionId: number; language: string }> = React
 
   return (
     <>
-      <div className="flex-1 p-3">
+      {/* RT-09 FIX: min-h-0 lets Monaco flex-child honour the container height */}
+      <div className="flex-1 p-3 min-h-0">
         <CodeEditor
           value={currentCode}
           onChange={handleChange}
           language={language}
           sessionId={sessionId}
           readOnly={isRecruiter}
+          isProgrammaticUpdate={isProgrammaticUpdateRef}
         />
       </div>
 
@@ -132,14 +144,85 @@ const WorkspaceEditor: React.FC<{ sessionId: number; language: string }> = React
   );
 });
 
+// ── RT-02 FIX: Proper React components instead of IIFE inside JSX ─────────────
+// The original code called `useAuthStore.getState()` inside an IIFE `(() => {})()` in JSX.
+// This is not technically a React hook (getState is synchronous zustand API), but the
+// IIFE pattern makes conditional component rendering impossible to type-check or
+// test, and DOES break React DevTools. Extract to proper named components.
+interface RecruiterLeaveDialogProps {
+  sessionId: number;
+  onClose: () => void;
+}
+const RecruiterLeaveDialog: React.FC<RecruiterLeaveDialogProps> = ({ sessionId, onClose }) => {
+  const navigate = useNavigate();
+  return (
+    <div className="dialog-overlay">
+      <div className="dialog-panel max-w-md w-full mx-4 p-7 space-y-5">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-status-warning/10">
+            <AlertTriangle className="w-5 h-5 text-status-warning" />
+          </div>
+          <h2 className="text-lg font-display font-semibold text-ink-primary">Session Controls</h2>
+        </div>
+        <p className="text-sm text-ink-secondary">
+          As the recruiter, you can end this session which will trigger the AI evaluation pipeline and generate candidate assessment.
+        </p>
+        <div className="flex flex-col gap-2 pt-1">
+          <Button variant="critical" className="w-full" onClick={async () => {
+            try {
+              await useSessionStore.getState().endSession(sessionId);
+              onClose();
+              navigate(`/sessions/${sessionId}/results`);
+            } catch (err) { console.error('Failed to end session:', err); }
+          }}>
+            End Session &amp; Run Evaluation
+          </Button>
+          <Button variant="secondary" className="w-full" onClick={() => { onClose(); navigate('/dashboard'); }}>
+            Leave Without Ending
+          </Button>
+          <Button variant="ghost" className="w-full" onClick={onClose}>Stay</Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface CandidateLeaveDialogProps {
+  onClose: () => void;
+  onLeave: () => void;
+}
+const CandidateLeaveDialog: React.FC<CandidateLeaveDialogProps> = ({ onClose, onLeave }) => (
+  <div className="dialog-overlay">
+    <div className="dialog-panel max-w-md w-full mx-4 p-7 space-y-5">
+      <div className="flex items-center gap-3">
+        <div className="p-2 rounded-lg bg-status-warning/10">
+          <AlertTriangle className="w-5 h-5 text-status-warning" />
+        </div>
+        <h2 className="text-lg font-display font-semibold text-ink-primary">Leave Interview?</h2>
+      </div>
+      <p className="text-sm text-ink-secondary">
+        Your progress has been saved but the interview session will remain active.
+      </p>
+      <div className="flex gap-3 pt-1">
+        <Button variant="secondary" className="flex-1" onClick={onClose}>Stay</Button>
+        <Button variant="critical" className="flex-1" onClick={onLeave}>Leave Interview</Button>
+      </div>
+    </div>
+  </div>
+);
+
 export const InterviewRoom: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const { currentSession, fetchSession } = useSessionStore();
+  const sessionFetchRequestedRef = useRef<number | null>(null);
 
-  // If currentSession is null (direct nav / refresh), fetch from URL param
   useEffect(() => {
-    if (!currentSession && id) {
-      fetchSession(parseInt(id));
+    const sessionId = id ? parseInt(id, 10) : NaN;
+    if (!currentSession && id && !Number.isNaN(sessionId) && sessionFetchRequestedRef.current !== sessionId) {
+      sessionFetchRequestedRef.current = sessionId;
+      fetchSession(sessionId).catch(() => {
+        sessionFetchRequestedRef.current = null;
+      });
     }
   }, [currentSession, id, fetchSession]);
 
@@ -163,7 +246,9 @@ export const InterviewRoom: React.FC = () => {
 
 const InterviewRoomContent: React.FC = () => {
   const navigate = useNavigate();
-  const { currentSession, roomToken, fetchRoomToken } = useSessionStore();
+  // RT-05 FIX: always fetch a fresh LiveKit token on mount so a stale/expired
+  // JWT from a previous navigation doesn't cause a silent room join failure.
+  const { currentSession, roomToken, fetchRoomToken, clearRoomToken } = useSessionStore();
   const { user } = useAuthStore();
   const { isConnected } = useWebSocketContext();
   const isRecruiter = user?.role === 'recruiter';
@@ -172,20 +257,30 @@ const InterviewRoomContent: React.FC = () => {
   const [language, setLanguage] = useState('typescript');
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   const [remoteEnvWarnings, setRemoteEnvWarnings] = useState<{has_vm_signals?: boolean; has_virtual_camera?: boolean} | null>(null);
+  const roomTokenRequestedRef = useRef<number | null>(null);
 
-  // Media capture — only for candidates (not recruiters)
   const mediaCapture = useMediaCapture(
     !isRecruiter && currentSession ? currentSession.id : null,
     { enableAudio: !isRecruiter, enableVideo: !isRecruiter }
   );
 
-  // Environment integrity probe — detects VMs and virtual cameras (candidates only)
   const envWarnings = useEnvironmentProbe(!isRecruiter && currentSession ? currentSession.id : null);
 
+  // RT-05: clear the stale token whenever the session changes so fetch always runs
   useEffect(() => {
     if (!currentSession) { navigate('/dashboard'); return; }
-    if (!roomToken) {
-      fetchRoomToken(currentSession.id).catch(() => navigate('/dashboard'));
+    clearRoomToken();
+    roomTokenRequestedRef.current = null;
+  }, [currentSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!currentSession) return;
+    if (!roomToken && roomTokenRequestedRef.current !== currentSession.id) {
+      roomTokenRequestedRef.current = currentSession.id;
+      fetchRoomToken(currentSession.id).catch(() => {
+        roomTokenRequestedRef.current = null;
+        navigate('/dashboard');
+      });
     }
   }, [currentSession, roomToken, navigate, fetchRoomToken]);
 
@@ -219,7 +314,7 @@ const InterviewRoomContent: React.FC = () => {
       <div className="ambient-orb ambient-orb-primary w-[400px] h-[400px] top-[-15%] right-[5%] z-0 opacity-40" />
       <div className="ambient-orb ambient-orb-blue w-[300px] h-[300px] bottom-[10%] left-[-5%] z-0 opacity-30" />
 
-      {/* ── Candidate's own integrity Warnings ── */}
+      {/* ── Candidate's own integrity warnings ── */}
       {!isRecruiter && envWarnings.vmDetected && (
         <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
           <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
@@ -238,7 +333,7 @@ const InterviewRoomContent: React.FC = () => {
         </div>
       )}
 
-      {/* ── Recruiter's view of Candidate's Integrity Warnings ── */}
+      {/* ── Recruiter's view of candidate's integrity warnings ── */}
       {isRecruiter && remoteEnvWarnings?.has_vm_signals && (
         <div className="relative z-20 bg-red-900/90 border-b border-red-500/40 px-4 py-2.5 flex items-center gap-3 animate-fade-in shrink-0">
           <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
@@ -281,7 +376,6 @@ const InterviewRoomContent: React.FC = () => {
               </div>
             </div>
 
-            {/* Recording indicator */}
             <div className="rec-indicator">
               <span className="rec-dot" />
               <span className="text-[10px] font-mono font-semibold text-status-critical tracking-wider">REC</span>
@@ -305,20 +399,19 @@ const InterviewRoomContent: React.FC = () => {
               </span>
             </div>
 
-            {/* Media capture status — candidates only */}
             {!isRecruiter && mediaCapture.isCapturing && (
               <div className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-neeti-border bg-neeti-surface">
                 {mediaCapture.cameraMissing ? (
-                    <CameraOff className="w-3 h-3 text-status-warning" />
+                  <CameraOff className="w-3 h-3 text-status-warning" />
                 ) : (
-                    <Camera className="w-3 h-3 text-status-success" />
+                  <Camera className="w-3 h-3 text-status-success" />
                 )}
                 <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.cameraMissing ? 'ERR' : mediaCapture.visionFrames}</span>
-                
+
                 {mediaCapture.micMissing ? (
-                    <MicOff className="w-3 h-3 text-status-warning" />
+                  <MicOff className="w-3 h-3 text-status-warning" />
                 ) : (
-                    <Mic className="w-3 h-3 text-status-success" />
+                  <Mic className="w-3 h-3 text-status-success" />
                 )}
                 <span className="text-[10px] font-mono text-ink-ghost">{mediaCapture.micMissing ? 'ERR' : mediaCapture.audioSegments}</span>
               </div>
@@ -342,16 +435,16 @@ const InterviewRoomContent: React.FC = () => {
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        <div className={`${isCodeExpanded ? 'w-1/2' : 'w-2/3'} border-r border-neeti-border flex flex-col transition-all duration-300`}>
-          <div className="flex-1 p-3">
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className={`${isCodeExpanded ? 'w-1/2' : 'w-2/3'} border-r border-neeti-border flex flex-col transition-all duration-300 min-h-0`}>
+          <div className="flex-1 p-3 min-h-0">
             <LiveKitRoom video={!isRecruiter} audio={true} token={roomToken} serverUrl={LIVEKIT_WS_URL} connectOptions={{ autoSubscribe: true }}>
               <VideoConference className="h-full" />
               <RoomAudioRenderer />
             </LiveKitRoom>
           </div>
 
-          <div className="border-t border-neeti-border bg-neeti-surface/60 px-4 py-2">
+          <div className="border-t border-neeti-border bg-neeti-surface/60 px-4 py-2 shrink-0">
             <div className="flex items-center justify-between text-[10px]">
               <div className="flex items-center gap-3">
                 <span className="text-ink-ghost">Status:</span>
@@ -372,8 +465,8 @@ const InterviewRoomContent: React.FC = () => {
           </div>
         </div>
 
-        <div className={`${isCodeExpanded ? 'w-1/2' : 'w-1/3'} flex flex-col transition-all duration-300`}>
-          <div className="border-b border-neeti-border bg-neeti-surface/60 px-4 py-2.5">
+        <div className={`${isCodeExpanded ? 'w-1/2' : 'w-1/3'} flex flex-col transition-all duration-300 min-h-0`}>
+          <div className="border-b border-neeti-border bg-neeti-surface/60 px-4 py-2.5 shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Code className="w-4 h-4 text-primary" />
@@ -397,68 +490,22 @@ const InterviewRoomContent: React.FC = () => {
         </div>
       </div>
 
-      {showLeaveDialog && (() => {
-        const isRecruiter = useAuthStore.getState().user?.role === 'recruiter';
-
-        if (isRecruiter) {
-          return (
-            <div className="dialog-overlay">
-              <div className="dialog-panel max-w-md w-full mx-4 p-7 space-y-5">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-status-warning/10">
-                    <AlertTriangle className="w-5 h-5 text-status-warning" />
-                  </div>
-                  <h2 className="text-lg font-display font-semibold text-ink-primary">Session Controls</h2>
-                </div>
-                <p className="text-sm text-ink-secondary">
-                  As the recruiter, you can end this session which will trigger the AI evaluation pipeline and generate candidate assessment.
-                </p>
-                <div className="flex flex-col gap-2 pt-1">
-                  <Button variant="critical" className="w-full" onClick={async () => {
-                    try {
-                      await useSessionStore.getState().endSession(currentSession!.id);
-                      setShowLeaveDialog(false);
-                      navigate(`/sessions/${currentSession!.id}/results`);
-                    } catch (err) { console.error('Failed to end session:', err); }
-                  }}>
-                    End Session &amp; Run Evaluation
-                  </Button>
-                  <Button variant="secondary" className="w-full" onClick={() => { setShowLeaveDialog(false); navigate('/dashboard'); }}>
-                    Leave Without Ending
-                  </Button>
-                  <Button variant="ghost" className="w-full" onClick={() => setShowLeaveDialog(false)}>Stay</Button>
-                </div>
-              </div>
-            </div>
-          );
-        }
-
-        return (
-          <div className="dialog-overlay">
-            <div className="dialog-panel max-w-md w-full mx-4 p-7 space-y-5">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-status-warning/10">
-                  <AlertTriangle className="w-5 h-5 text-status-warning" />
-                </div>
-                <h2 className="text-lg font-display font-semibold text-ink-primary">Leave Interview?</h2>
-              </div>
-              <p className="text-sm text-ink-secondary">
-                Your progress has been saved but the interview session will remain active.
-              </p>
-              <div className="flex gap-3 pt-1">
-                <Button variant="secondary" className="flex-1" onClick={() => setShowLeaveDialog(false)}>Stay</Button>
-                <Button variant="critical" className="flex-1" onClick={async () => { mediaCapture.stop(); setShowLeaveDialog(false); navigate('/dashboard'); }}>
-                  Leave Interview
-                </Button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {/* RT-02 FIX: proper components — no hook-violating IIFE */}
+      {showLeaveDialog && (
+        isRecruiter ? (
+          <RecruiterLeaveDialog
+            sessionId={currentSession.id}
+            onClose={() => setShowLeaveDialog(false)}
+          />
+        ) : (
+          <CandidateLeaveDialog
+            onClose={() => setShowLeaveDialog(false)}
+            onLeave={() => { mediaCapture.stop(); setShowLeaveDialog(false); navigate('/dashboard'); }}
+          />
+        )
+      )}
     </div>
   );
 };
 
 // Synced for GitHub timestamp
-
- 

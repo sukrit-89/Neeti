@@ -8,7 +8,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, String
 
 from app.core.database import get_db
 from app.core.auth import get_current_user, get_current_recruiter
@@ -214,9 +214,13 @@ async def get_room_token(
     
     from app.models.models import UserRole
     
+    # RT-06 FIX: coerce both sides to str() — session.recruiter_id may be a
+    # UUID object while current_user["id"] is a Supabase UUID string,
+    # causing the equality check to silently return False and treating a
+    # legitimate recruiter as a candidate (wrong LiveKit role/permissions).
     is_recruiter = (
-        current_user.get("role") == UserRole.RECRUITER and 
-        session.recruiter_id == current_user["id"]
+        str(current_user.get("role", "")).lower() == UserRole.RECRUITER.value
+        and str(session.recruiter_id) == str(current_user["id"])
     )
     
     is_candidate = False
@@ -323,9 +327,10 @@ async def get_session(
         )
     
     from app.models.models import UserRole
+    current_role = str(current_user.get("role", "")).lower()
     
-    if current_user.get("role") == UserRole.RECRUITER:
-        if session.recruiter_id != current_user["id"]:
+    if current_role == UserRole.RECRUITER.value:
+        if str(session.recruiter_id) != str(current_user["id"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to view this session"
@@ -335,7 +340,7 @@ async def get_session(
             select(Candidate).where(
                 and_(
                     Candidate.session_id == session_id,
-                    Candidate.user_id == current_user["id"]
+                    Candidate.user_id.cast(String) == str(current_user["id"])
                 )
             )
         )
@@ -377,7 +382,7 @@ async def update_session(
             detail="Session not found"
         )
     
-    if session.recruiter_id != current_user["id"]:
+    if str(session.recruiter_id) != str(current_user["id"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to update this session"
@@ -412,7 +417,7 @@ async def start_session(
             detail="Session not found"
         )
     
-    if session.recruiter_id != current_user["id"]:
+    if str(session.recruiter_id) != str(current_user["id"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to start this session"
@@ -456,7 +461,7 @@ async def end_session(
             detail="Session not found"
         )
     
-    if session.recruiter_id != current_user["id"]:
+    if str(session.recruiter_id) != str(current_user["id"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to end this session"

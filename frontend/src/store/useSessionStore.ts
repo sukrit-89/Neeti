@@ -3,6 +3,17 @@ import { sessionsApi } from '../lib/api';
 import { extractErrorMessage } from '../lib/errorUtils';
 import type { Session, SessionCreateRequest, SessionJoinRequest } from '../lib/api';
 
+function dedupeSessions(sessions: Session[]): Session[] {
+  const seen = new Set<number>();
+  return sessions.filter((session) => {
+    if (seen.has(session.id)) {
+      return false;
+    }
+    seen.add(session.id);
+    return true;
+  });
+}
+
 interface SessionState {
   sessions: Session[];
   currentSession: Session | null;
@@ -15,6 +26,7 @@ interface SessionState {
   createSession: (data: SessionCreateRequest) => Promise<Session>;
   joinSession: (data: SessionJoinRequest) => Promise<void>;
   fetchRoomToken: (sessionId: number) => Promise<void>;
+  clearRoomToken: () => void;
   setCurrentSession: (session: Session | null) => void;
   startSession: (sessionId: number) => Promise<void>;
   endSession: (sessionId: number) => Promise<void>;
@@ -34,7 +46,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     set({ isLoading: true, error: null });
     try {
       const sessions = await sessionsApi.listSessions(status);
-      set({ sessions, isLoading: false });
+      set({ sessions: dedupeSessions(sessions), isLoading: false });
     } catch (error: unknown) {
       set({
         error: extractErrorMessage(error, 'Failed to fetch sessions'),
@@ -61,7 +73,7 @@ export const useSessionStore = create<SessionState>((set) => ({
     try {
       const session = await sessionsApi.createSession(data);
       set((state) => ({
-        sessions: [session, ...state.sessions],
+        sessions: dedupeSessions([session, ...state.sessions]),
         currentSession: session,
         isLoading: false,
       }));
@@ -115,13 +127,16 @@ export const useSessionStore = create<SessionState>((set) => ({
     set({ currentSession: session });
   },
 
+  // RT-05 FIX: Evict stale LiveKit JWT so InterviewRoom always fetches fresh.
+  clearRoomToken: () => set({ roomToken: null }),
+
   startSession: async (sessionId) => {
     set({ isLoading: true, error: null });
     try {
       const session = await sessionsApi.startSession(sessionId);
       set((state) => ({
         currentSession: session,
-        sessions: state.sessions.map((s) => (s.id === sessionId ? session : s)),
+        sessions: dedupeSessions(state.sessions.map((s) => (s.id === sessionId ? session : s))),
         isLoading: false,
       }));
     } catch (error: unknown) {
@@ -139,7 +154,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       const session = await sessionsApi.endSession(sessionId);
       set((state) => ({
         currentSession: session,
-        sessions: state.sessions.map((s) => (s.id === sessionId ? session : s)),
+        sessions: dedupeSessions(state.sessions.map((s) => (s.id === sessionId ? session : s))),
         isLoading: false,
       }));
     } catch (error: unknown) {

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
-import { supabase } from './supabase';
+import { supabase, getAccessTokenSafe, refreshSessionSafe } from './supabase';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -14,9 +14,9 @@ const apiClient: AxiosInstance = axios.create({
 
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) {
-      config.headers.set('Authorization', `Bearer ${session.access_token}`);
+    const accessToken = await getAccessTokenSafe();
+    if (accessToken) {
+      config.headers.set('Authorization', `Bearer ${accessToken}`);
     }
     return config;
   },
@@ -32,9 +32,9 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const { data: { session }, error: refreshError } = await supabase.auth.refreshSession();
+        const session = await refreshSessionSafe();
 
-        if (refreshError || !session) {
+        if (!session) {
           await supabase.auth.signOut();
           window.location.href = '/login';
           return Promise.reject(error);

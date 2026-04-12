@@ -6,7 +6,7 @@ SECURITY: Roles are validated against app_metadata (server-side only)
 and fall back to user_metadata with validation. Never trust client-set
 metadata alone for authorization decisions.
 """
-from functools import lru_cache
+import asyncio
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -16,14 +16,30 @@ from supabase import create_client, Client
 
 security = HTTPBearer()
 
-# ── FIX #10: Singleton Supabase client ──
-@lru_cache(maxsize=1)
+# BUG-03 FIX: Explicit module-level singleton instead of @lru_cache.
+# - @lru_cache keeps the instance alive forever and can't be invalidated
+#   without restarting the process (breaks key rotation + test isolation).
+# - reset_supabase_client() allows safe invalidation in tests or after a
+#   service-role key rotation.
+_supabase_client: Optional[Client] = None
+
+
 def get_supabase_client() -> Client:
-    """Get cached Supabase client instance (singleton)."""
-    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
-        raise ValueError("Supabase credentials not configured")
-    
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    """Get (or lazily create) the Supabase admin client singleton."""
+    global _supabase_client
+    if _supabase_client is None:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+            raise ValueError("Supabase credentials not configured")
+        _supabase_client = create_client(
+            settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY
+        )
+    return _supabase_client
+
+
+def reset_supabase_client() -> None:
+    """Invalidate the cached client — call after key rotation or in test teardown."""
+    global _supabase_client
+    _supabase_client = None
 
 
 # ── FIX #1: Determine role from server-side source ──
@@ -63,8 +79,14 @@ async def get_current_user(
     
     try:
         supabase = get_supabase_client()
-        
-        user_response = supabase.auth.get_user(token)
+
+        # BUG-02 FIX: supabase.auth.get_user() is a synchronous HTTPX call.
+        # Running it directly in an async handler blocks the entire uvicorn
+        # event loop for the network round-trip (~50-300ms).  Under concurrent
+        # load this serialises ALL request processing on the worker.
+        # asyncio.to_thread offloads the call to a thread-pool worker so the
+        # event loop stays free for other coroutines.
+        user_response = await asyncio.to_thread(supabase.auth.get_user, token)
         
         if not user_response or not user_response.user:
             raise HTTPException(

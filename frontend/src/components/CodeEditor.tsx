@@ -13,6 +13,14 @@ interface CodeEditorProps {
   value: string;
   onChange: (value: string) => void;
   readOnly?: boolean;
+  /**
+   * RT-04 FIX: A ref set to `true` by WorkspaceEditor immediately before
+   * applying a WS-received code update. When true, CodeEditor skips the
+   * `sendMessage(code.changed)` call, breaking the echo loop:
+   *   WS receive → setCurrentCode → Monaco onChange → sendMessage (← blocked)
+   * The ref is reset to `false` after each handleChange call.
+   */
+  isProgrammaticUpdate?: React.MutableRefObject<boolean>;
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = React.memo(({
@@ -21,6 +29,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = React.memo(({
   value,
   onChange,
   readOnly = false,
+  isProgrammaticUpdate,
 }) => {
   const [isExecuting, setIsExecuting] = React.useState(false);
   const [output, setOutput] = React.useState('');
@@ -98,6 +107,14 @@ export const CodeEditor: React.FC<CodeEditorProps> = React.memo(({
       if (newValue === undefined || readOnly) return;
       onChange(newValue);
 
+      // RT-04 FIX: If this change was triggered by a WS-received value
+      // (recruiter watching candidate), skip the outbound sendMessage call.
+      // The programmatic flag is reset here so the NEXT user keystroke fires.
+      if (isProgrammaticUpdate?.current) {
+        isProgrammaticUpdate.current = false;
+        return;
+      }
+
       // Debounce: send code update via WebSocket for real-time sync to recruiter
       if (typingTimeout.current) clearTimeout(typingTimeout.current);
       typingTimeout.current = window.setTimeout(() => {
@@ -125,7 +142,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = React.memo(({
           );
       }, 500);
     },
-    [sessionId, onChange, language, sendMessage, readOnly]
+    [sessionId, onChange, language, sendMessage, readOnly, isProgrammaticUpdate]
   );
 
   const handleExecute = async () => {
@@ -170,6 +187,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = React.memo(({
         </div>
       )}
 
+      {/* RT-09 FIX: min-h-0 ensures Monaco honours the flex parent's height */}
       <div className="flex-1 relative min-h-0">
         <Editor
           height="100%"

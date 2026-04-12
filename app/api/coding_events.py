@@ -2,10 +2,11 @@
 Coding events API endpoints.
 Track and execute code during interviews.
 """
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import json
+from typing import Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, String
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
@@ -24,6 +25,30 @@ ALLOWED_LANGUAGES = {
     "go", "rust", "ruby", "php", "swift", "kotlin", "scala",
     "csharp", "bash", "sql", "r", "perl", "haskell", "lua",
 }
+
+# Warning/anomaly telemetry should never block interview flow.
+NON_BLOCKING_EVENT_TYPES = {
+    "environment_anomaly",
+    "peripheral_change",
+    "tab_away",
+    "tab_return",
+    "keystroke",
+    "paste",
+}
+
+
+def _ensure_jsonable(payload: Any) -> dict[str, Any]:
+    """Normalize metadata to JSON-safe values; fallback to string conversion."""
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        return {"value": str(payload)}
+
+    try:
+        json.dumps(payload)
+        return payload
+    except Exception:
+        return json.loads(json.dumps(payload, default=str))
 
 async def verify_session_participant(
     session_id: int,
@@ -45,15 +70,17 @@ async def verify_session_participant(
     if str(session.recruiter_id) == str(current_user["id"]):
         return session
 
+    # Be defensive across legacy DB states where candidates.user_id may still
+    # be INTEGER; cast to string to avoid UUID-vs-int binding errors.
     result = await db.execute(
         select(Candidate).where(
             and_(
                 Candidate.session_id == session_id,
-                Candidate.user_id == str(current_user["id"])
+                Candidate.user_id.cast(String) == str(current_user["id"])
             )
         )
     )
-    
+
     candidate = result.scalar_one_or_none()
     
     # Fallback to email matching if user_id matching failed for some reason
@@ -78,16 +105,59 @@ async def verify_session_participant(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_coding_event(
     event_data: CodingEventCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ) -> dict:
     """Create a coding event (keystroke, execution, etc.)"""
-    
-    session = await verify_session_participant(event_data.session_id, current_user, db)
+
+    try:
+        session = await verify_session_participant(event_data.session_id, current_user, db)
+    except HTTPException as exc:
+        if event_data.event_type in NON_BLOCKING_EVENT_TYPES:
+            logger.warning(
+                "Non-blocking event %s ignored during participant verification for session %s: %s",
+                event_data.event_type,
+                event_data.session_id,
+                exc.detail,
+            )
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {
+                "success": False,
+                "event_id": None,
+                "warning": "event_ignored",
+                "detail": str(exc.detail),
+            }
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Participant verification failed for event %s in session %s",
+            event_data.event_type,
+            event_data.session_id,
+        )
+        if event_data.event_type in NON_BLOCKING_EVENT_TYPES:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {
+                "success": False,
+                "event_id": None,
+                "warning": "event_ignored",
+                "detail": str(exc),
+            }
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
     # Skip recording events from recruiters — only candidate actions matter for evaluation
     if str(session.recruiter_id) == str(current_user["id"]):
         return {"success": True, "event_id": None, "skipped": "recruiter_events_not_tracked"}
+
+    # High-frequency editor telemetry should never interrupt the interview flow.
+    # It is useful for analysis, but it must degrade gracefully if the session
+    # is in a transient state.
+    if event_data.event_type in {"keystroke", "paste"} and not event_data.code_snapshot:
+        return {
+            "success": True,
+            "event_id": None,
+            "skipped": "empty_editor_event",
+        }
 
     # FIX #5: Validate code length
     if event_data.code_snapshot and len(event_data.code_snapshot) > MAX_CODE_LENGTH:
@@ -96,48 +166,69 @@ async def create_coding_event(
             detail=f"Code snapshot exceeds maximum length of {MAX_CODE_LENGTH} bytes"
         )
     
-    new_event = CodingEvent(
-        session_id=event_data.session_id,
-        event_type=event_data.event_type,
-        code_snapshot=event_data.code_snapshot,
-        language=event_data.language,
-        execution_output=event_data.execution_output,
-        execution_error=event_data.execution_error,
-        meta_data=event_data.metadata or {}
-    )
-    
-    db.add(new_event)
-    await db.commit()
-    await db.refresh(new_event)
-    
-    logger.info(
-        f"Coding event created: {new_event.event_type} "
-        f"for session {event_data.session_id}"
-    )
-    
-    if event_data.event_type == "execute":
-        await publish_code_executed(
+    metadata = _ensure_jsonable(getattr(event_data, "metadata", {}) or {})
+
+    try:
+        new_event = CodingEvent(
             session_id=event_data.session_id,
-            data={
-                "language": event_data.language,
-                "code": event_data.code_snapshot,
-                "output": event_data.execution_output,
-                "error": event_data.execution_error
+            event_type=event_data.event_type,
+            code_snapshot=event_data.code_snapshot,
+            language=event_data.language,
+            execution_output=event_data.execution_output,
+            execution_error=event_data.execution_error,
+            meta_data=metadata
+        )
+        
+        db.add(new_event)
+        await db.commit()
+        await db.refresh(new_event)
+        
+        logger.info(
+            f"Coding event created: {new_event.event_type} "
+            f"for session {event_data.session_id}"
+        )
+        
+        if event_data.event_type == "execute":
+            await publish_code_executed(
+                session_id=event_data.session_id,
+                data={
+                    "language": event_data.language,
+                    "code": event_data.code_snapshot,
+                    "output": event_data.execution_output,
+                    "error": event_data.execution_error
+                }
+            )
+        elif event_data.event_type == "environment_anomaly":
+            await publish_environment_anomaly(
+                session_id=event_data.session_id,
+                data=metadata
+            )
+        elif event_data.event_type in {"keystroke", "paste"} and event_data.code_snapshot:
+            # BUG-08 FIX: the previous else-branch published code.changed for
+            # ALL remaining event types, including tab_away / tab_return whose
+            # code_snapshot is None.  Sending code=None overwrites the
+            # recruiter's code view and crashes Monaco with setValue(null).
+            # Only publish code.changed when there is an actual code payload.
+            await publish_code_changed(
+                session_id=event_data.session_id,
+                data={
+                    "language": event_data.language,
+                    "code": event_data.code_snapshot,
+                }
+            )
+        # tab_away, tab_return, peripheral_change and other telemetry
+        # events do not trigger a code.changed broadcast.
+    except Exception as e:
+        logger.exception("Error creating coding event for session %s", event_data.session_id)
+        if event_data.event_type in NON_BLOCKING_EVENT_TYPES:
+            response.status_code = status.HTTP_202_ACCEPTED
+            return {
+                "success": False,
+                "event_id": None,
+                "warning": "event_not_persisted",
+                "detail": str(e),
             }
-        )
-    elif event_data.event_type == "environment_anomaly":
-        await publish_environment_anomaly(
-            session_id=event_data.session_id,
-            data=event_data.metadata or {}
-        )
-    else:
-        await publish_code_changed(
-            session_id=event_data.session_id,
-            data={
-                "language": event_data.language,
-                "code": event_data.code_snapshot
-            }
-        )
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     
     return {"success": True, "event_id": new_event.id}
 

@@ -127,6 +127,14 @@ Five specialized agents run in parallel:
 - **Forensic Reports** — per-candidate breakdowns with strengths, risks, and evidence
 - **Role-Based Access** — route guards on frontend and API
 
+### 🛡️ Integrity & Anti-Cheat Detection
+
+- **Virtual Machine Detection** — browser fingerprinting flags VMs at session join
+- **Virtual Camera Detection** — distinguishes hardware webcams from OBS/virtual devices
+- **Peripheral Change Monitoring** — detects device swaps mid-session
+- **Tab-Away Tracking** — logs and flags window focus loss events
+- **Live Warning Banners** — recruiters see real-time alerts with evidence
+
 ---
 
 ## 🛠 Tech Stack
@@ -135,7 +143,7 @@ Five specialized agents run in parallel:
 <tr><td><b>Frontend</b></td><td>React 19 · TypeScript 5.9 · Vite · TailwindCSS · Zustand · Monaco Editor · LiveKit React</td></tr>
 <tr><td><b>Backend</b></td><td>FastAPI · Python 3.11 · SQLAlchemy 2.0 (async) · Pydantic v2 · Celery</td></tr>
 <tr><td><b>Database</b></td><td>PostgreSQL 15 (Supabase) · Redis 7 (cache + pub/sub)</td></tr>
-<tr><td><b>Auth</b></td><td>Supabase Auth (JWT with refresh rotation)</td></tr>
+<tr><td><b>Auth</b></td><td>Supabase Auth (JWT with refresh rotation, server-side session revocation)</td></tr>
 <tr><td><b>Video</b></td><td>LiveKit Cloud (WebRTC SFU)</td></tr>
 <tr><td><b>Code Exec</b></td><td>Judge0 (sandboxed, 50+ languages)</td></tr>
 <tr><td><b>AI</b></td><td>Ollama (llama3, local) · OpenAI GPT-4o-mini (optional)</td></tr>
@@ -170,7 +178,19 @@ LIVEKIT_API_SECRET=xxxxx
 LIVEKIT_WS_URL=wss://xxxx.livekit.cloud
 ```
 
-### 2. Launch everything
+### 2. Run the database migration
+
+After setting up your Supabase project, apply the production schema:
+
+```bash
+python -m venv venv && .\venv\Scripts\activate   # Windows
+pip install -r requirements.txt
+python run_migration_004.py
+```
+
+This creates the `event_outbox` table, idempotency indexes, and all required schema objects.
+
+### 3. Launch everything
 
 ```bash
 docker-compose up -d --build
@@ -183,7 +203,7 @@ curl http://localhost:8000/health
 # → {"status":"healthy","database":"connected","redis":"connected"}
 ```
 
-### 3. Open the app
+### 4. Open the app
 
 | Mode | URL |
 |:-----|:----|
@@ -199,9 +219,9 @@ Register → create a session → share the 6-char code → start interviewing.
 ```
 neeti-ai/
 ├── app/                          # FastAPI backend
-│   ├── api/                      #   Route handlers (auth, sessions, coding, ws)
+│   ├── api/                      #   Route handlers (auth, sessions, coding, ws, speech)
 │   ├── agents/                   #   5 AI evaluation agents
-│   ├── core/                     #   Config, database, auth, redis, logging
+│   ├── core/                     #   Config, database, auth, redis, events, outbox
 │   ├── models/                   #   SQLAlchemy ORM models
 │   ├── schemas/                  #   Pydantic v2 request/response schemas
 │   ├── services/                 #   Business logic (AI, Judge0, LiveKit, S3…)
@@ -212,16 +232,17 @@ neeti-ai/
 │   │   ├── pages/                #   14 route-level pages
 │   │   ├── components/           #   UI components (Button, Card, Logo, Footer…)
 │   │   ├── store/                #   Zustand stores (auth, session)
-│   │   └── lib/                  #   API client, WebSocket, utilities
+│   │   └── lib/                  #   API client, WebSocket, environment probing
 │   └── Dockerfile                #   Multi-stage: Node build → Nginx
 │
 ├── tests/                        # Pytest suite
-├── migrations/                   # SQL migration scripts
+├── migrations/                   # SQL migration scripts (run in order)
 ├── dev-docs/                     # Developer documentation (8 guides)
 │
 ├── docker-compose.yml            # Full stack orchestration
 ├── Dockerfile                    # API container
 ├── Dockerfile.worker             # Celery worker container
+├── run_migration_004.py          # One-time migration runner script
 ├── QUICKSTART.md                 # 5-minute setup guide
 └── requirements.txt              # Python dependencies
 ```
@@ -237,8 +258,8 @@ neeti-ai/
 | `POST` | `/api/auth/register` | Create account |
 | `POST` | `/api/auth/login` | Get access + refresh token |
 | `GET` | `/api/auth/me` | Current user profile |
-| `POST` | `/api/auth/refresh` | Refresh access token |
-| `POST` | `/api/auth/logout` | Invalidate session |
+| `POST` | `/api/auth/refresh` | Refresh token (**body**, not query param) |
+| `POST` | `/api/auth/logout` | Invalidate session server-side |
 
 ### Sessions
 
@@ -287,15 +308,20 @@ neeti-ai/
 │  FastAPI — Python 3.11 (async) :8000                             │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐          │
 │  │ Auth API │ │ Sessions │ │ Coding   │ │ WebSocket  │          │
-│  │(Supabase)│ │   API    │ │ Events   │ │  Events    │          │
+│  │(Supabase)│ │   API    │ │ Events   │ │  Handler   │          │
 │  └──────────┘ └──────────┘ └──────────┘ └────────────┘          │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  Transactional Outbox Sweeper (background task)          │    │
+│  │  Guarantees event delivery even if Redis is unreachable  │    │
+│  └──────────────────────────────────────────────────────────┘    │
 └──────┬──────────┬──────────┬──────────┬─────────────────────────┘
        │          │          │          │
   ┌────▼───┐ ┌───▼────┐ ┌───▼────┐ ┌───▼────┐
   │Supabase│ │Postgres│ │ Redis  │ │LiveKit │
   │ Auth   │ │  15    │ │   7    │ │ (SFU)  │
   └────────┘ └────────┘ └───┬────┘ └────────┘
-                            │
+                            │ session-scoped pub/sub
                     ┌───────▼───────┐
                     │ Celery Workers │
                     └───────┬───────┘
@@ -317,6 +343,22 @@ neeti-ai/
                    └─────────────────┘
 ```
 
+### Real-Time Event Flow
+
+```
+Candidate browser
+  → POST /api/coding-events          (keystroke / tab_away / execute)
+  → DB write + outbox row (atomic)
+  → Redis publish: events:session:{id}:{type}
+  → WebSocket handler (subscribed per-session)
+  → Recruiter browser receives live update
+
+Outbox sweeper (every 10s):
+  → Retries any pending rows if Redis was unreachable
+  → Publishes to both global + session-scoped channels
+  → Marks rows "published" on success
+```
+
 ---
 
 ## 🧑‍💻 Development
@@ -326,7 +368,7 @@ neeti-ai/
 ```bash
 python -m venv venv && .\venv\Scripts\activate   # Windows
 pip install -r requirements.txt
-python init_db.py
+python run_migration_004.py                       # apply DB schema
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -348,6 +390,7 @@ pytest tests/ --cov=app --cov-report=html
 ```bash
 python cleanup_database.py   # wipe data, keep Supabase auth users
 python reset_all.py          # full reset — all auth users + all data
+python verify_migration.py   # confirm event_outbox + indexes exist
 ```
 
 ---
@@ -371,6 +414,8 @@ python reset_all.py          # full reset — all auth users + all data
 | `POSTGRES_USER` | — | `interview_user` | Postgres username |
 | `POSTGRES_PASSWORD` | — | `changeme` | Postgres password |
 | `USE_OLLAMA` | — | `false` | Use local Ollama instead of OpenAI |
+| `RATE_LIMIT_PER_MINUTE` | — | `60` | API requests per IP per minute |
+| `DEBUG` | — | `false` | Enable verbose error responses |
 
 ---
 
@@ -386,6 +431,26 @@ python reset_all.py          # full reset — all auth users + all data
 | [Production Setup](dev-docs/PRODUCTION_SETUP.md) | Docker deployment guide | 25 min |
 | [Supabase Deployment](dev-docs/SUPABASE_DEPLOYMENT.md) | Supabase configuration | 10 min |
 | [Executive Summary](dev-docs/EXECUTIVE_SUMMARY.md) | Business & product overview | 15 min |
+
+---
+
+## 🔒 Production Hardening (v2)
+
+This release includes a comprehensive production audit and hardening pass:
+
+| Area | Fix |
+|:-----|:----|
+| **Session isolation** | WebSocket subscribers use session-scoped Redis channels — cross-session leakage is structurally impossible |
+| **Event delivery** | Transactional outbox pattern — agent events are guaranteed delivered even if Redis is temporarily down |
+| **Async correctness** | All Supabase auth calls moved to `asyncio.to_thread` — event loop no longer blocked on authentication |
+| **Supabase client** | Replaced `@lru_cache` singleton with explicit module-level var + `reset_supabase_client()` for key rotation |
+| **Rate limiting** | Fixed-window counter replaced with sliding-window Redis sorted set — eliminates 2× burst at boundary |
+| **Security** | `refresh_token` moved from query param to JSON body — no longer logged by proxies/CDNs |
+| **Logout** | Server-side `admin.sign_out` invalidates refresh token — sessions can't be reused after logout |
+| **Code editor echo** | `isProgrammaticUpdateRef` guard prevents Monaco change events from re-broadcasting recruiter injections |
+| **WS validation** | Incoming WebSocket messages validated against `WSMessage` schema — malformed messages rejected cleanly |
+| **Error exposure** | Internal exception details gated behind `DEBUG=true` — stack traces never leak to production clients |
+| **Timestamps** | All `datetime.utcnow()` replaced with `datetime.now(timezone.utc)` — Python 3.12+ compatible |
 
 ---
 

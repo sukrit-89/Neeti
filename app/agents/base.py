@@ -4,9 +4,9 @@ All AI agents inherit from these base classes.
 """
 from abc import ABC, abstractmethod
 from typing import Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.logging import logger
 
@@ -15,7 +15,8 @@ class AgentInput(BaseModel):
     """Base input for all agents."""
     session_id: int
     data: dict[str, Any]
-    metadata: dict[str, Any] = {}
+    # BUG-06 class: mutable bare {} default is rejected in Pydantic v2 strict mode
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentOutput(BaseModel):
@@ -23,8 +24,9 @@ class AgentOutput(BaseModel):
     agent_type: str
     session_id: int
     score: Optional[float] = None
-    findings: dict[str, Any] = {}
-    flags: list[dict[str, Any]] = []
+    # BUG-06 class: mutable bare {} / [] defaults
+    findings: dict[str, Any] = Field(default_factory=dict)
+    flags: list[dict[str, Any]] = Field(default_factory=list)
     insights: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -65,14 +67,10 @@ class BaseAgent(ABC):
     async def run(self, input_data: AgentInput) -> AgentOutput:
         """
         Execute agent with error handling and logging.
-        
-        Args:
-            input_data: Agent input
-        
-        Returns:
-            AgentOutput
         """
-        started_at = datetime.utcnow()
+        # BUG-05 class: datetime.utcnow() is deprecated in Python 3.12+
+        # and produces a timezone-naive datetime.
+        started_at = datetime.now(timezone.utc)
         
         try:
             logger.info(
@@ -81,7 +79,7 @@ class BaseAgent(ABC):
             
             output = await self.process(input_data)
             output.started_at = started_at
-            output.completed_at = datetime.utcnow()
+            output.completed_at = datetime.now(timezone.utc)
             # Preserve agent-set status (e.g. "skipped" when no data)
             if output.status == "completed" or output.status == "":
                 output.status = "completed"
@@ -102,7 +100,7 @@ class BaseAgent(ABC):
                 agent_type=self.agent_type,
                 session_id=input_data.session_id,
                 started_at=started_at,
-                completed_at=datetime.utcnow(),
+                completed_at=datetime.now(timezone.utc),
                 status="failed",
                 error_message=str(e)
             )
@@ -110,23 +108,33 @@ class BaseAgent(ABC):
     def calculate_score(self, metrics: dict[str, float], weights: dict[str, float]) -> float:
         """
         Helper to calculate weighted score from metrics.
-        
+
+        Iterates over ``weights`` (not ``metrics``) so that any extra keys in
+        the metrics dict (e.g. raw sample counts) can never accidentally affect
+        the score, even if a future developer adds a matching weight entry.
+
         Args:
-            metrics: Dict of metric name to value (0-100)
-            weights: Dict of metric name to weight (sum should be 1.0)
-        
+            metrics: Dict of *scoring* metric names to values in [0, 100].
+                     Pass only the keys you intend to score — never raw counts.
+            weights: Dict of metric name to weight. Values should sum to 1.0;
+                     if they don't, the result is still normalised correctly.
+
         Returns:
-            Weighted score (0-100)
+            Weighted score clamped to [0.0, 100.0]
         """
         total_score = 0.0
         total_weight = 0.0
-        
-        for metric, value in metrics.items():
-            weight = weights.get(metric, 0.0)
+
+        # FIX BUG-02: drive the loop from weights, not metrics.
+        # This guarantees only intentionally-weighted keys contribute.
+        for metric, weight in weights.items():
+            value = metrics.get(metric)
+            if value is None or weight == 0.0:
+                continue
             total_score += value * weight
             total_weight += weight
-        
+
         if total_weight == 0:
             return 0.0
-        
+
         return min(100.0, max(0.0, total_score / total_weight))

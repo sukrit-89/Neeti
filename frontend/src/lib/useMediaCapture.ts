@@ -8,7 +8,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import axios from 'axios';
-import { supabase } from './supabase';
+import { getAccessTokenSafe } from './supabase';
 import { codingApi } from './api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -34,12 +34,50 @@ interface MediaCaptureState {
 // Browser SpeechRecognition types
 type SpeechRecognitionType = typeof window extends { SpeechRecognition: infer T } ? T : unknown;
 
-async function getAuthHeaders(): Promise<Record<string, string>> {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) {
-        return { Authorization: `Bearer ${session.access_token}` };
+const VIRTUAL_CAMERA_SIGNATURES = [
+    'obs virtual',
+    'obs-camera',
+    'obs camera',
+    'obs studio',
+    'manycam',
+    'xsplit',
+    'snap camera',
+    'e2esoft',
+    'virtual cam',
+    'virtualcamera',
+    'virtual camera',
+    'vcam',
+    'droidcam',
+    'iriun',
+    'epoccam',
+    'chromacam',
+    'mmhmm',
+    'camo',
+    'webcamoid',
+    'ndi',
+];
+
+function findVirtualCameraSignature(labels: Array<string | null | undefined>): string | null {
+    for (const labelRaw of labels) {
+        const label = (labelRaw || '').toLowerCase().trim();
+        if (!label) continue;
+
+        for (const signature of VIRTUAL_CAMERA_SIGNATURES) {
+            if (label.includes(signature)) {
+                return signature;
+            }
+        }
     }
-    return {};
+
+    return null;
+}
+
+async function getAuthHeaders(): Promise<Record<string, string> | null> {
+    const accessToken = await getAccessTokenSafe();
+    if (accessToken) {
+        return { Authorization: `Bearer ${accessToken}` };
+    }
+    return null;
 }
 
 export function useMediaCapture(
@@ -67,6 +105,7 @@ export function useMediaCapture(
     const visionIntervalRef = useRef<number | null>(null);
     const startTimeRef = useRef<number>(0);
     const activeRef = useRef(false);
+    const startingRef = useRef(false);
     const segmentCountRef = useRef(0);
     const frameCountRef = useRef(0);
 
@@ -97,6 +136,7 @@ export function useMediaCapture(
             );
 
             const headers = await getAuthHeaders();
+            if (!headers) return;
             const elapsed = (Date.now() - startTimeRef.current) / 1000;
 
             await axios.post(
@@ -124,6 +164,7 @@ export function useMediaCapture(
             try {
                 const elapsed = (Date.now() - startTimeRef.current) / 1000;
                 const headers = await getAuthHeaders();
+                if (!headers) return;
 
                 const formData = new FormData();
                 formData.append('session_id', String(sessionId));
@@ -183,7 +224,7 @@ export function useMediaCapture(
         };
 
         recognition.onerror = (event: { error: string }) => {
-            if (event.error === 'no-speech') return; // Normal — just silence
+            if (event.error === 'no-speech' || event.error === 'aborted') return; // Normal transitions
             console.warn('[MediaCapture] SpeechRecognition error:', event.error);
         };
 
@@ -204,7 +245,8 @@ export function useMediaCapture(
     }, [sendSpeechSegment]);
 
     const start = useCallback(async () => {
-        if (!sessionId || activeRef.current) return;
+        if (!sessionId || activeRef.current || startingRef.current) return;
+        startingRef.current = true;
 
         try {
             let stream: MediaStream | undefined;
@@ -262,46 +304,36 @@ export function useMediaCapture(
 
                 // ── Virtual camera detection (secondary check) ──
                 const videoTrack = stream.getVideoTracks()[0];
-                if (videoTrack) {
-                    const label = (videoTrack.label || '').toLowerCase();
-                    const virtualSigs = [
-                        'obs virtual', 'obs-camera', 'manycam', 'xsplit',
-                        'snap camera', 'e2esoft', 'virtual cam', 'virtualcam',
-                        'droidcam', 'iriun', 'epoccam', 'chromacam', 'mmhmm',
-                    ];
-                    const match = virtualSigs.find(sig => label.includes(sig));
-                    if (match) {
-                        console.warn(`[MediaCapture] Virtual camera detected: "${videoTrack.label}"`);
-                        setState(prev => ({ ...prev, activeVirtualCameraWarning: true }));
-                        codingApi.createEvent({
-                            session_id: sessionId,
-                            event_type: 'environment_anomaly',
-                            metadata: {
-                                anomaly_count: 1,
-                                anomalies: [{
-                                    type: 'virtual_camera',
-                                    evidence: `Active camera matches virtual camera signature: "${match}"`,
-                                    confidence: 'high',
-                                    raw_value: videoTrack.label,
-                                }],
-                                has_virtual_camera: true,
-                                detected_via: 'active_video_track',
-                                probe_timestamp: new Date().toISOString(),
-                            },
-                        }).catch(err => console.warn('[MediaCapture] Failed to report virtual camera:', err));
-                    } else {
-                        // Candidate switched to a physical camera - clear the flag
-                        setState(prev => ({ ...prev, activeVirtualCameraWarning: false }));
-                        codingApi.createEvent({
-                            session_id: sessionId,
-                            event_type: 'environment_anomaly',
-                            metadata: {
-                                has_virtual_camera: false,
-                                detected_via: 'active_video_track',
-                                probe_timestamp: new Date().toISOString(),
-                            },
-                        }).catch(err => console.warn('[MediaCapture] Failed to clear virtual camera:', err));
-                    }
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDeviceLabels = devices
+                    .filter(device => device.kind === 'videoinput')
+                    .map(device => device.label);
+
+                const match = findVirtualCameraSignature([
+                    videoTrack?.label,
+                    ...videoDeviceLabels,
+                ]);
+
+                if (match) {
+                    const evidenceSource = videoTrack?.label || videoDeviceLabels.find(Boolean) || 'unknown camera';
+                    console.warn(`[MediaCapture] Virtual camera detected: "${evidenceSource}" (matched: ${match})`);
+                    setState(prev => ({ ...prev, activeVirtualCameraWarning: true }));
+                    codingApi.createEvent({
+                        session_id: sessionId,
+                        event_type: 'environment_anomaly',
+                        metadata: {
+                            anomaly_count: 1,
+                            anomalies: [{
+                                type: 'virtual_camera',
+                                evidence: `Active camera or device label matches virtual camera signature: "${match}"`,
+                                confidence: 'high',
+                                raw_value: evidenceSource,
+                            }],
+                            has_virtual_camera: true,
+                            detected_via: videoTrack?.label ? 'active_video_track' : 'video_devices',
+                            probe_timestamp: new Date().toISOString(),
+                        },
+                    }).catch(err => console.warn('[MediaCapture] Failed to report virtual camera:', err));
                 }
             }
 
@@ -310,7 +342,8 @@ export function useMediaCapture(
             segmentCountRef.current = 0;
             frameCountRef.current = 0;
 
-            setState({
+            setState((prev) => ({
+                ...prev,
                 isCapturing: true,
                 hasPermission: true,
                 audioSegments: 0,
@@ -318,7 +351,7 @@ export function useMediaCapture(
                 error: null,
                 cameraMissing: !videoEnabled && enableVideo,
                 micMissing: !audioEnabled && enableAudio,
-            });
+            }));
 
             // Start periodic vision capture
             if (videoEnabled) {
@@ -347,12 +380,15 @@ export function useMediaCapture(
                 hasPermission: false,
                 error: message,
             }));
+        } finally {
+            startingRef.current = false;
         }
     }, [sessionId, enableAudio, enableVideo, captureAndSendFrame, startSpeechRecognition]);
 
     // ── Stop capturing ──
     const stop = useCallback(() => {
         activeRef.current = false;
+        startingRef.current = false;
 
         // Clear vision interval
         if (visionIntervalRef.current) {
@@ -424,6 +460,14 @@ export function useMediaCapture(
                     setState(prev => ({ ...prev, peripheralWarning: warningMsg }));
                     // Auto-dismiss warning after 10s
                     setTimeout(() => setState(prev => ({ ...prev, peripheralWarning: null })), 10000);
+
+                    const virtualCameraMatch = findVirtualCameraSignature(
+                        devices.filter(d => d.kind === 'videoinput').map(d => d.label)
+                    );
+
+                    if (virtualCameraMatch) {
+                        setState(prev => ({ ...prev, activeVirtualCameraWarning: true }));
+                    }
 
                     await codingApi.createEvent({
                         session_id: sessionId,

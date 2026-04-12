@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { supabase } from '@/lib/supabase';
+import { supabase, getSessionSafe } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/errorUtils';
 
 interface User {
@@ -153,9 +153,7 @@ export const useAuthStore = create<AuthState>()(
       fetchCurrentUser: async () => {
         set({ isLoading: true });
         try {
-          const { data: { session }, error } = await supabase.auth.getSession();
-
-          if (error) throw error;
+          const session = await getSessionSafe();
 
           if (session?.user) {
             set({
